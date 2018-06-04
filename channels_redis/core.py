@@ -177,7 +177,7 @@ class RedisChannelLayer(BaseChannelLayer):
                 # Wait for our message to appear
                 while True:
                     try:
-                        message = await self.receive_buffer[channel].get()
+                        message = await asyncio.wait_for(self.receive_buffer[channel].get(), self.queue_get_timeout)
                         print("MESSAGE GET", datetime.now())
                         if self.receive_buffer[channel].empty():
                             del self.receive_buffer[channel]
