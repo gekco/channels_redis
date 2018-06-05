@@ -137,11 +137,12 @@ class RedisChannelLayer(BaseChannelLayer):
         connection = await self.connection(index)
         # Check the length of the list before send
         # This can allow the list to leak slightly over capacity, but that's fine.
-        if await connection.llen(channel_key) >= self.get_capacity(channel):
-            raise ChannelFull()
+        with await connection as connection:
+            if await connection.llen(channel_key) >= self.get_capacity(channel):
+                raise ChannelFull()
         # Push onto the list then set it to expire in case it's not consumed
-        await connection.rpush(channel_key, self.serialize(message))
-        await connection.expire(channel_key, int(self.expiry))
+            await connection.rpush(channel_key, self.serialize(message))
+            await connection.expire(channel_key, int(self.expiry))
 
     async def receive(self, channel):
         """
@@ -222,7 +223,8 @@ class RedisChannelLayer(BaseChannelLayer):
         connection = await self.connection(index)
         content = None
         while content is None:
-            content = await connection.blpop(channel_key, timeout=self.blpop_timeout)
+            with await connection as connection:
+                content = await connection.blpop(channel_key, timeout=self.blpop_timeout)
         # Message decode
         message = self.deserialize(content[1])
         # TODO: message expiry?
@@ -260,7 +262,8 @@ class RedisChannelLayer(BaseChannelLayer):
         # Go through each connection and remove all with prefix
         for i in range(self.ring_size):
             connection = await self.connection(i)
-            await connection.eval(delete_prefix, keys=[], args=[self.prefix + "*"])
+            with await connection as c:
+                await c.eval(delete_prefix, keys=[], args=[self.prefix + "*"])
 
     ### Groups extension ###
 
@@ -274,11 +277,12 @@ class RedisChannelLayer(BaseChannelLayer):
         # Get a connection to the right shard
         group_key = self._group_key(group)
         connection = await self.connection(self.consistent_hash(group))
-        # Add to group sorted set with creation time as timestamp
-        await connection.zadd(group_key, time.time(), channel)
-        # Set expiration to be group_expiry, since everything in
-        # it at this point is guaranteed to expire before that
-        await connection.expire(group_key, self.group_expiry)
+        with await connection as connection:
+            # Add to group sorted set with creation time as timestamp
+            await connection.zadd(group_key, time.time(), channel)
+            # Set expiration to be group_expiry, since everything in
+            # it at this point is guaranteed to expire before that
+            await connection.expire(group_key, self.group_expiry)
 
     async def group_discard(self, group, channel):
         """
@@ -289,7 +293,8 @@ class RedisChannelLayer(BaseChannelLayer):
         assert self.valid_channel_name(channel), "Channel name not valid"
         key = self._group_key(group)
         connection = await self.connection(self.consistent_hash(group))
-        await connection.zrem(key, channel)
+        with await connection as connection:
+            await connection.zrem(key, channel)
 
     async def group_send(self, group, message):
         """
@@ -299,11 +304,12 @@ class RedisChannelLayer(BaseChannelLayer):
         # Retrieve list of all channel names
         key = self._group_key(group)
         connection = await self.connection(self.consistent_hash(group))
-        # Discard old channels based on group_expiry
-        await connection.zremrangebyscore(key, min=0, max=int(time.time()) - self.group_expiry)
+        with await connection as connection:
+            # Discard old channels based on group_expiry
+            await connection.zremrangebyscore(key, min=0, max=int(time.time()) - self.group_expiry)
 
         # Return current lot
-        channel_names = [x.decode("utf8") for x in await connection.zrange(key, 0, -1)]
+            channel_names = [x.decode("utf8") for x in await connection.zrange(key, 0, -1)]
 
         connection_to_channels, channel_to_message, channel_to_capacity, channel_to_key = \
             self._map_channel_to_connection(channel_names, message)
@@ -331,7 +337,8 @@ class RedisChannelLayer(BaseChannelLayer):
                     if channel_to_key[channel_name] in channel_redis_keys]
 
             connection = await self.connection(connection_index)
-            await connection.eval(group_send_lua, keys=channel_redis_keys, args=args)
+            with await connection as c:
+                await c.eval(group_send_lua, keys=channel_redis_keys, args=args)
 
     def _map_channel_to_connection(self, channel_names, message):
         """
