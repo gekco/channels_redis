@@ -476,12 +476,13 @@ class RedisChannelLayer(BaseChannelLayer):
 
         def __del__(self):
             try:
-                self.conn.close()
+                loop = asyncio.get_event_loop()
+                loop.run_until_complete(self.close())
             except RuntimeError:
                 pass
             self.conn = None
 
         async def close(self):
             if self.conn is not None:
-                self.conn.close()
+                await self.conn.close()
                 self.conn = None
